@@ -215,9 +215,187 @@ dig @localhost client001.corp.local
 dig @localhost server001.corp.local
 ```
 
-## 🤖 Automation
+## 🔄 High Availability Setup with Synchronization Scripts
 
-Create a cron job for automatic updates:
+For production environments requiring high availability, this project includes synchronization scripts to maintain multiple Unbound servers with identical forward zone configurations.
+
+### Architecture Overview
+
+```
+┌─────────────────────┐                    ┌─────────────────────┐
+│  Primary Server     │                    │  Secondary Server   │
+│                     │                    │                     │
+│ • Downloads from API│      SSH/SCP       │ • No API access     │
+│ • Generates zones   │ ◄────────────────►│ • Syncs from primary│
+│ • Unbound (active)  │   pdl.csv transfer │ • Unbound (standby) │
+│                     │                    │                     │
+│ API Rate Limits: ✓  │                    │ API Rate Limits: ✗  │
+└─────────────────────┘                    └─────────────────────┘
+```
+
+**Note:** The secondary server does not require Zscaler API credentials. It relies entirely on the CSV file synchronized from the primary server, helping to avoid API rate limits.
+
+### Primary Server Script Setup
+
+1. **Copy Python scripts and synchronization script:**
+   ```bash
+   # Copy Python scripts to root directory
+   sudo cp download_devices_csv.py /root/
+   sudo cp generate_forward_zones.py /root/
+   
+   # Copy synchronization script
+   sudo cp sync_unbound_primary.sh /root/
+   sudo chmod +x /root/sync_unbound_primary.sh
+   
+   # Copy .env file with API credentials
+   sudo cp .env /root/
+   sudo chmod 600 /root/.env
+   ```
+
+2. **Create the zonesync user for secure file transfer:**
+   ```bash
+   # Create user
+   sudo useradd -m -s /bin/bash zonesync
+   
+   # Set password (optional if using only SSH keys)
+   sudo passwd zonesync
+   
+   # Create .ssh directory
+   sudo mkdir -p /home/zonesync/.ssh
+   sudo chmod 700 /home/zonesync/.ssh
+   sudo chown zonesync:zonesync /home/zonesync/.ssh
+   ```
+
+3. **Configure cron for nightly execution:**
+   ```bash
+   # Add to root's crontab - runs at 2:00 AM daily
+   echo "0 2 * * * /root/sync_unbound_primary.sh >/dev/null 2>&1" | sudo crontab -
+   
+   # Verify crontab entry
+   sudo crontab -l
+   ```
+
+### Secondary Server Script Setup
+
+1. **Copy Python script and synchronization script:**
+   ```bash
+   # Only need the generate script (no download script needed)
+   sudo cp generate_forward_zones.py /root/
+   
+   # Copy synchronization script
+   sudo cp sync_unbound_secondary.sh /root/
+   sudo chmod +x /root/sync_unbound_secondary.sh
+   ```
+
+2. **Configure the primary server IP:**
+   ```bash
+   # Replace with your actual primary server IP
+   sudo sed -i 's/IP_SERVER_PRIMARIO/10.1.1.100/g' /root/sync_unbound_secondary.sh
+   ```
+
+3. **Setup SSH key authentication:**
+   ```bash
+   # Generate SSH key pair (as root)
+   sudo ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N ""
+   
+   # Copy public key to primary server
+   sudo ssh-copy-id zonesync@10.1.1.100
+   
+   # Test SSH connection
+   sudo ssh zonesync@10.1.1.100 "echo 'SSH connection successful'"
+   ```
+
+4. **Configure cron for nightly execution (30 minutes after primary):**
+   ```bash
+   # Add to root's crontab - runs at 2:30 AM daily
+   echo "30 2 * * * /root/sync_unbound_secondary.sh >/dev/null 2>&1" | sudo crontab -
+   
+   # Verify crontab entry
+   sudo crontab -l
+   ```
+
+### Script Features
+
+- **Automatic error handling**: Scripts exit on any failure to prevent partial updates
+- **Comprehensive logging**: All operations logged with timestamps
+  - Primary: `/var/log/unbound_sync.log`
+  - Secondary: `/var/log/unbound_sync_secondary.log`
+- **Permission management**: Automatic permission setting for synchronized files
+- **Service management**: Automatic Unbound restart after configuration changes
+- **API rate limit protection**: Only primary server accesses Zscaler API
+
+### Monitoring the Synchronization
+
+#### Check Synchronization Status
+
+```bash
+# On primary server - check last sync
+sudo tail -20 /var/log/unbound_sync.log
+
+# On secondary server - check last sync
+sudo tail -20 /var/log/unbound_sync_secondary.log
+
+# Verify file timestamps
+ls -la /home/zonesync/pdl.csv  # On primary
+ls -la /root/pdl.csv            # On secondary
+```
+
+#### Create a Monitoring Script
+
+```bash
+cat > /usr/local/bin/check-unbound-sync.sh << 'EOF'
+#!/bin/bash
+
+echo "=== Unbound Sync Status ==="
+echo
+
+# Check if sync ran today
+if grep -q "$(date +%Y-%m-%d)" /var/log/unbound_sync*.log; then
+    echo "✓ Sync ran today"
+    grep "$(date +%Y-%m-%d)" /var/log/unbound_sync*.log | tail -5
+else
+    echo "✗ No sync today"
+fi
+
+# Check forward zones count
+ZONE_COUNT=$(grep -c "forward-zone:" /etc/unbound/forward_zones.conf 2>/dev/null || echo "0")
+echo
+echo "Active forward zones: $ZONE_COUNT"
+
+# Check Unbound status
+echo
+systemctl is-active --quiet unbound && echo "✓ Unbound is running" || echo "✗ Unbound is NOT running"
+EOF
+
+chmod +x /usr/local/bin/check-unbound-sync.sh
+```
+
+### Failover Configuration
+
+For automatic failover, configure your clients to use both servers:
+
+#### Option 1: Client DNS Configuration
+```yaml
+# /etc/resolv.conf or DHCP configuration
+nameserver 10.1.1.100  # Primary Unbound
+nameserver 10.1.1.101  # Secondary Unbound
+```
+
+#### Option 2: Load Balancer VIP
+For seamless failover, consider using a load balancer or keepalived to provide a single VIP that automatically fails over between servers.
+
+### Troubleshooting Synchronization
+
+| Issue | Check | Solution |
+|-------|-------|----------|
+| No CSV on secondary | SSH connectivity | Test with `ssh zonesync@primary "ls /home/zonesync/"` |
+| Permission denied | File permissions | Ensure zonesync owns `/home/zonesync/pdl.csv` |
+| Old data | Cron execution | Check cron logs: `grep CRON /var/log/syslog` |
+| API errors (primary only) | API credentials | Verify `.env` file in `/root/` |
+
+## 🤖 Manual Automation (Without HA Scripts)
+
+For single-server deployments, create a simple cron job:
 
 ```bash
 # Create update script
@@ -325,6 +503,8 @@ server:
 -   Regularly rotate Zscaler API credentials
 -   Monitor DNS query logs for anomalies
 -   Consider implementing DNS over TLS for client connections
+-   Secure SSH access between primary and secondary servers
+-   Use SSH key authentication instead of passwords
 
 ## 📈 Monitoring
 
