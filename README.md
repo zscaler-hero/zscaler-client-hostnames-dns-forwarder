@@ -1,6 +1,6 @@
 # Zscaler Forward Zones Generator
 
-Tools to download devices from Zscaler One API and generate DNS forward zone configurations for Unbound.
+A comprehensive solution for integrating Unbound DNS with Zscaler ZPA to enable client-to-client connectivity through synthetic IP resolution. This project automatically generates DNS forward zone configurations from Zscaler-registered devices, allowing seamless resolution of client FQDNs through Branch Connectors.
 
 ---
 
@@ -11,23 +11,90 @@ This project is released under the MIT License. See the LICENSE file for full de
 
 ---
 
-## Installation
+## 🎯 Purpose
 
-### Prerequisites
+This solution addresses a common challenge in Zscaler ZPA deployments: enabling client-to-client communication when client and server FQDNs share the same domain namespace. By leveraging Unbound DNS with dynamically generated forward zones, we can:
 
+-   Route client hostname queries to Zscaler Branch Connectors for synthetic IP resolution
+-   Maintain standard DNS resolution for server resources through corporate DNS
+-   Enable ZPA client-to-client functionality without complex DNS restructuring
+-   Support dynamic environments with automated configuration updates
+
+## 🏗️ Architecture
+
+```
+┌─────────────────┐                  ┌─────────────────────┐
+│   ZPA Client    │                  │  Corporate DNS      │
+│ (hostname.corp) │                  │  (10.1.1.53)        │
+└────────┬────────┘                  └──────────┬──────────┘
+         │                                      │
+         │ DNS Query                            │
+         │ hostname.corp?                       │
+         ▼                                      │
+┌─────────────────┐                             │
+│   Unbound DNS   │──── server.corp ────────────┘
+│ (Local Resolver)│      (forward)
+│                 │
+│ ┌─────────────┐ │     ┌─────────────────────┐
+│ │forward_zones│ │     │ Branch Connector    │
+│ │    .conf    │ │     │ VIP: 10.213.182.62  │
+│ └─────────────┘ │     │                     │
+└────────┬────────┘     │ ┌─────────────────┐ │
+         │              │ │ Synthetic IP    │ │
+         └──client.corp─┤ │ Resolution      │ │
+            (forward)   │ └─────────────────┘ │
+                        └─────────────────────┘
+                                   │
+                                   ▼
+                        ┌─────────────────────┐
+                        │ ZPA Client-to-Client│
+                        │    Connectivity     │
+                        └─────────────────────┘
+```
+
+## 📋 Prerequisites
+
+### System Requirements
+
+-   RHEL 9 / CentOS 9 / Rocky Linux 9 (for App Connector deployment)
 -   Python 3.6 or higher
+-   Unbound DNS server
+-   Network access to Zscaler API endpoints
+-   Network access to Branch Connector VIP
 
-### Dependencies
-
-Install the required dependencies:
+### Python Dependencies
 
 ```bash
 pip install requests python-dotenv
 ```
 
-### Configuration
+## 🚀 Installation
 
-1. Create a `.env` file in the project directory:
+### 1. Install Unbound on RHEL 9
+
+```bash
+# Install Unbound
+sudo dnf install -y unbound
+
+# Enable and start the service
+sudo systemctl enable unbound
+sudo systemctl start unbound
+
+# Configure firewall (if needed)
+sudo firewall-cmd --permanent --add-service=dns
+sudo firewall-cmd --reload
+```
+
+### 2. Clone the Repository
+
+```bash
+git clone https://github.com/zhero-ai/zscaler-forward-zones-generator.git
+cd zscaler-forward-zones-generator
+```
+
+### 3. Configure API Access
+
+Create a `.env` file in the project directory:
 
 ```env
 ZSCALER_IDENTITY_BASE_URL=https://[YOUR-ID].zslogin.net
@@ -35,11 +102,65 @@ ZSCALER_CLIENT_ID=your_client_id
 ZSCALER_CLIENT_SECRET=your_client_secret
 ```
 
-2. Replace the values with your OAuth credentials obtained from the Zscaler admin portal.
+Replace the values with your OAuth credentials obtained from the Zscaler admin portal.
 
-## Usage
+## ⚙️ Unbound Configuration
 
-### 1. Download devices from Zscaler
+### Critical Configuration Changes
+
+Edit `/etc/unbound/unbound.conf` and ensure these settings:
+
+```yaml
+server:
+    # CRITICAL: Use only iterator module (no DNSSEC validation)
+    module-config: "iterator"
+
+    # Network interfaces
+    interface: 0.0.0.0
+    interface: ::0
+
+    # Access control (adjust for your network)
+    access-control: 10.0.0.0/8 allow
+    access-control: 172.16.0.0/12 allow
+    access-control: 192.168.0.0/16 allow
+
+    # Logging (optional, for troubleshooting)
+    verbosity: 1
+    log-queries: yes
+
+    # Performance tuning
+    cache-min-ttl: 60
+    cache-max-ttl: 86400
+
+    # Include generated forward zones
+    include: "/etc/unbound/forward_zones.conf"
+
+# Default forward zone for corporate DNS
+forward-zone:
+    name: "."
+    forward-addr: 10.1.1.53  # Your corporate DNS server(s)
+    forward-first: no
+```
+
+**Important Notes:**
+
+-   `module-config: "iterator"` is essential - it disables DNSSEC validation which can interfere with synthetic IP resolution
+-   Place the `include` statement BEFORE the default forward-zone
+-   More specific zones (from forward_zones.conf) take precedence over the default zone
+
+### Verify Configuration
+
+```bash
+# Check configuration syntax
+sudo unbound-checkconf
+
+# Test DNS resolution
+dig @localhost hostname.domain.local
+```
+
+## 📖 Usage
+
+### 1. Download Devices from Zscaler
 
 ```bash
 # With custom filename
@@ -49,103 +170,182 @@ python download_devices_csv.py devices.csv
 python download_devices_csv.py
 ```
 
-The script will download all devices in CSV format from your Zscaler environment.
+This downloads all registered devices from your Zscaler environment in CSV format.
 
-### 2. Generate DNS forward zones
+### 2. Generate Forward Zones Configuration
 
 ```bash
-# Basic usage with default domain (domain.local)
-python generate_forward_zones.py devices.csv forward_zones.conf 10.213.182.62
+# Basic usage
+python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf BRANCH_CONNECTOR_VIP --domain yourdomain.local
 
-# With multiple DNS servers (comma-separated)
-python generate_forward_zones.py devices.csv zones.conf 10.213.182.62,192.168.1.100
+# With multiple Branch Connector IPs (for redundancy)
+python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.213.182.62,10.213.182.63 --domain corp.local
 
-# With custom domain and multiple DNS servers
-python generate_forward_zones.py devices.csv zones.conf 10.213.182.62,192.168.1.100,8.8.8.8 --domain company.local
-
-# Verbose output
-python generate_forward_zones.py devices.csv zones.conf 10.213.182.62 --verbose
+# Verbose output for troubleshooting
+python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.213.182.62 --domain corp.local --verbose
 ```
 
-### Complete example
+### 3. Reload Unbound
 
 ```bash
-# Step 1: Download devices
+# Reload configuration without dropping cache
+sudo unbound-control reload
+
+# Or restart the service
+sudo systemctl restart unbound
+```
+
+## 🔄 Complete Example
+
+```bash
+# Step 1: Download current device list
 python download_devices_csv.py
 
-# Step 2: Generate DNS zones (use the file created in step 1)
-python generate_forward_zones.py zscaler_devices_20250610_143022.csv forward_zones.conf 10.213.182.62
+# Step 2: Generate forward zones (using the auto-generated filename)
+python generate_forward_zones.py zscaler_devices_20250610_143022.csv /etc/unbound/forward_zones.conf 10.213.182.62 --domain corp.local
+
+# Step 3: Reload Unbound
+sudo unbound-control reload
+
+# Step 4: Test resolution
+# Client hostname should resolve through Branch Connector
+dig @localhost client001.corp.local
+
+# Server hostname should resolve through corporate DNS
+dig @localhost server001.corp.local
 ```
 
-## Parameters
+## 🤖 Automation
 
-### download_devices_csv.py
+Create a cron job for automatic updates:
 
+```bash
+# Create update script
+cat > /usr/local/bin/update-zscaler-zones.sh << 'EOF'
+#!/bin/bash
+cd /opt/zscaler-forward-zones-generator
+python download_devices_csv.py /tmp/devices.csv
+python generate_forward_zones.py /tmp/devices.csv /etc/unbound/forward_zones.conf 10.213.182.62 --domain corp.local
+unbound-control reload
+EOF
+
+chmod +x /usr/local/bin/update-zscaler-zones.sh
+
+# Add to crontab (runs every 4 hours)
+echo "0 */4 * * * root /usr/local/bin/update-zscaler-zones.sh" >> /etc/crontab
 ```
-python download_devices_csv.py [OUTPUT_FILENAME]
-```
 
--   `OUTPUT_FILENAME` (optional): Name of the CSV file to create
+## 📊 Generated Output
 
-### generate_forward_zones.py
+The `forward_zones.conf` file contains:
 
-```
-python generate_forward_zones.py INPUT_CSV OUTPUT_CONF DNS_IP [--domain DOMAIN] [--verbose]
-```
-
--   `INPUT_CSV`: Zscaler devices CSV file
--   `OUTPUT_CONF`: Unbound configuration file to create
--   `DNS_IP`: DNS server IP address (e.g. 10.213.182.62)
--   `--domain`: Domain suffix for zones (default: domain.local)
--   `--verbose`: Detailed output
-
-## Generated output
-
-The generated configuration file contains forward zones for Unbound DNS:
-
-```
+```yaml
 # Unbound Forward Zones Configuration
 # Generated on: 2025-06-10 14:30:22
-# Total forward zones: 156
+# Total forward zones: 1,847
 # DNS server: 10.213.182.62
-# Domain: domain.local
+# Domain: corp.local
+# Note: Hostnames have been deduplicated to prevent conflicts
 
 forward-zone:
-    name: "pc001234.domain.local"
+    name: "laptop-jsmith.corp.local"
     forward-addr: 10.213.182.62
 
 forward-zone:
-    name: "laptop5678.domain.local"
+    name: "desktop-doe001.corp.local"
     forward-addr: 10.213.182.62
+
+# ... additional zones ...
 ```
 
-## Features
+## 🔧 Troubleshooting
 
--   **Automatic filtering**: Processes only Windows devices with "Registered" or "Unregistered" status
--   **Deduplication**: Automatically removes duplicate hostnames
--   **Performance**: Optimized for large datasets (up to 30,000+ devices)
--   **Error handling**: Clear and informative error messages
--   **OAuth authentication**: Secure integration with Zscaler One API
--   **Multiple DNS servers**: Supports configuration with multiple DNS servers
+### DNS Resolution Issues
 
-## Troubleshooting
+1. **Check Unbound is running:**
 
-### Authentication error
+    ```bash
+    sudo systemctl status unbound
+    ```
 
-Verify that the credentials in the `.env` file are correct and that the OAuth application has the necessary permissions for the Client Connector API.
+2. **Verify forward zones are loaded:**
 
-### API limit reached
+    ```bash
+    sudo unbound-control list_forwards
+    ```
 
-If you receive rate limiting errors (429), wait before retrying. The download script has low API limits.
+3. **Test specific resolution:**
 
-### No Windows devices found
+    ```bash
+    # Should go to Branch Connector
+    dig @localhost client-hostname.corp.local +short
 
-Ensure the CSV contains devices with:
-- "WINDOWS" in the device type field
-- Device state "Registered" or "Unregistered" 
-- Valid hostnames
+    # Should go to corporate DNS
+    dig @localhost server-hostname.corp.local +short
+    ```
 
-## License
+4. **Enable query logging:**
+    ```yaml
+    server:
+        log-queries: yes
+        verbosity: 2
+    ```
+
+### Common Issues
+
+| Issue                 | Solution                                                    |
+| --------------------- | ----------------------------------------------------------- |
+| SERVFAIL responses    | Ensure `module-config: "iterator"` is set                   |
+| Zones not loading     | Check file permissions on forward_zones.conf                |
+| Authentication errors | Verify .env credentials and API permissions                 |
+| No devices found      | Check CSV contains Windows devices with "Registered" status |
+
+### Performance Optimization
+
+For large deployments (10,000+ devices):
+
+```yaml
+server:
+    # Increase cache size
+    msg-cache-size: 100m
+    rrset-cache-size: 200m
+
+    # Increase number of threads
+    num-threads: 4
+
+    # Optimize for forward zones
+    prefetch: yes
+    prefetch-key: yes
+```
+
+## 🔒 Security Considerations
+
+-   Limit Unbound access with appropriate `access-control` directives
+-   Use firewall rules to restrict DNS access
+-   Regularly rotate Zscaler API credentials
+-   Monitor DNS query logs for anomalies
+-   Consider implementing DNS over TLS for client connections
+
+## 📈 Monitoring
+
+Basic monitoring script:
+
+```bash
+#!/bin/bash
+# Check zone count
+ZONE_COUNT=$(unbound-control list_forwards | wc -l)
+echo "Active forward zones: $ZONE_COUNT"
+
+# Check cache hit rate
+unbound-control stats_noreset | grep "total.num.cachehits"
+unbound-control stats_noreset | grep "total.num.cachemiss"
+```
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## 📝 License
 
 MIT License
 
@@ -168,5 +368,7 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
 
 **Developed by ZHERO srl - [https://zhero.ai](https://zhero.ai)**
