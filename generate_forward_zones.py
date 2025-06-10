@@ -19,8 +19,8 @@ forward-zone:
 
 Usage:
     python generate_forward_zones.py [INPUT_CSV_FILE] [OUTPUT_CONF_FILE] [DNS_IPS]
-    python generate_forward_zones.py devices.csv forward_zones.conf 10.213.182.62
-    python generate_forward_zones.py devices.csv zones.conf 10.213.182.62,192.168.1.1
+    python generate_forward_zones.py devices.csv forward_zones.conf 10.0.0.12
+    python generate_forward_zones.py devices.csv zones.conf 10.0.0.12,192.168.1.1
     python generate_forward_zones.py devices.csv custom_zones.conf 192.168.1.1 --domain custom.local
 
 Copyright (c) 2025 ZHERO srl, Italy
@@ -202,9 +202,11 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
             f"Available fields: {list(first_device.keys())[:5]}..."
         )  # Show only first 5
         return []
-    
+
     if not device_state_key:
-        print(f"Warning: Could not find device state field - proceeding without state filtering")
+        print(
+            f"Warning: Could not find device state field - proceeding without state filtering"
+        )
         print(f"Available fields: {list(first_device.keys())[:10]}...")
 
     print(
@@ -221,7 +223,11 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
     for device in devices:
         device_type = device.get(device_type_key, "").lower()
         hostname = device.get(hostname_key, "").strip()
-        device_state = device.get(device_state_key, "").lower() if device_state_key else "registered"
+        device_state = (
+            device.get(device_state_key, "").lower()
+            if device_state_key
+            else "registered"
+        )
 
         # Quick checks with early exit
         if (
@@ -239,7 +245,9 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
             device_copy["_device_state"] = device_state
             windows_devices.append(device_copy)
 
-    print(f"Found {len(windows_devices)} Windows devices with valid hostnames and registered/unregistered state")
+    print(
+        f"Found {len(windows_devices)} Windows devices with valid hostnames and registered/unregistered state"
+    )
     return windows_devices
 
 
@@ -308,7 +316,7 @@ def deduplicate_hostnames(windows_devices: List[Dict[str, str]]) -> List[str]:
 
 def generate_forward_zones_config(
     windows_devices: List[Dict[str, str]],
-    dns_ips: str = "10.213.182.62",
+    dns_ips: str = "10.0.0.12",
     domain: str = "domain.local",
 ) -> str:
     """
@@ -336,13 +344,13 @@ def generate_forward_zones_config(
         return "# No valid hostnames found\n"
 
     hostname_count = len(unique_hostnames)
-    
+
     # Parse and validate DNS IPs
-    dns_ip_list = [ip.strip() for ip in dns_ips.split(',') if ip.strip()]
+    dns_ip_list = [ip.strip() for ip in dns_ips.split(",") if ip.strip()]
     if not dns_ip_list:
         print("Warning: No valid DNS IPs provided")
         return "# No valid DNS IPs found\n"
-    
+
     # Validate each IP
     valid_dns_ips = []
     for ip in dns_ip_list:
@@ -350,17 +358,19 @@ def generate_forward_zones_config(
             valid_dns_ips.append(ip)
         else:
             print(f"Warning: Invalid DNS IP skipped: {ip}")
-    
+
     if not valid_dns_ips:
         print("Error: No valid DNS IPs found after validation")
         return "# No valid DNS IPs found\n"
-    
+
     print(f"Generating configuration for {hostname_count} unique hostnames...")
     print(f"Using DNS servers: {', '.join(valid_dns_ips)}")
 
     # Pre-allocate list for better performance with large datasets
     # Each hostname generates (2 + len(dns_ips)) lines, plus header (7 lines)
-    lines_per_hostname = 2 + len(valid_dns_ips) + 1  # forward-zone, name, N*forward-addr, empty
+    lines_per_hostname = (
+        2 + len(valid_dns_ips) + 1
+    )  # forward-zone, name, N*forward-addr, empty
     estimated_lines = (hostname_count * lines_per_hostname) + 8
     config_lines = []
     # Note: Python lists don't have reserve(), but pre-extending helps with large datasets
@@ -369,7 +379,7 @@ def generate_forward_zones_config(
         config_lines.clear()  # Clear but keep allocated memory
 
     # Add header comment
-    dns_servers_str = ', '.join(valid_dns_ips)
+    dns_servers_str = ", ".join(valid_dns_ips)
     config_lines.extend(
         [
             "# Unbound Forward Zones Configuration",
@@ -457,16 +467,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s devices.csv forward_zones.conf 10.213.182.62
-  %(prog)s devices.csv zones.conf 10.213.182.62,192.168.1.1
-  %(prog)s devices.csv custom_zones.conf 10.213.182.62,192.168.1.1,8.8.8.8 --domain internal.local
-  %(prog)s devices.csv my_zones.conf 10.213.182.62 --verbose
+  %(prog)s devices.csv forward_zones.conf 10.0.0.12
+  %(prog)s devices.csv zones.conf 10.0.0.12,192.168.1.1
+  %(prog)s devices.csv custom_zones.conf 10.0.0.12,192.168.1.1,8.8.8.8 --domain internal.local
+  %(prog)s devices.csv my_zones.conf 10.0.0.12 --verbose
         """,
     )
 
     parser.add_argument("input_csv_file", help="Path to the Zscaler devices CSV file")
     parser.add_argument("output_conf_file", help="Output configuration file path")
-    parser.add_argument("dns_ips", help="DNS server IP addresses to forward queries to (comma-separated for multiple servers)")
+    parser.add_argument(
+        "dns_ips",
+        help="DNS server IP addresses to forward queries to (comma-separated for multiple servers)",
+    )
     parser.add_argument(
         "--domain",
         "-d",
@@ -480,17 +493,17 @@ Examples:
     args = parser.parse_args()
 
     # Validate arguments - parse and validate all DNS IPs
-    dns_ip_list = [ip.strip() for ip in args.dns_ips.split(',') if ip.strip()]
+    dns_ip_list = [ip.strip() for ip in args.dns_ips.split(",") if ip.strip()]
     if not dns_ip_list:
         print(f"✗ Error: No DNS IP addresses provided")
-        print("Please provide at least one valid IPv4 address (e.g., 10.213.182.62)")
+        print("Please provide at least one valid IPv4 address (e.g., 10.0.0.12)")
         sys.exit(1)
-    
+
     # Check if all IPs are valid
     invalid_ips = [ip for ip in dns_ip_list if not validate_dns_ip(ip)]
     if invalid_ips:
         print(f"✗ Error: Invalid DNS IP address(es): {', '.join(invalid_ips)}")
-        print("Please provide valid IPv4 addresses (e.g., 10.213.182.62,192.168.1.1)")
+        print("Please provide valid IPv4 addresses (e.g., 10.0.0.12,192.168.1.1)")
         sys.exit(1)
 
     print("Zscaler Forward Zones Generator")

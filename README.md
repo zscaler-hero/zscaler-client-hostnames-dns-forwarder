@@ -37,7 +37,7 @@ This solution addresses a common challenge in Zscaler ZPA deployments: enabling 
 │                 │
 │ ┌─────────────┐ │     ┌─────────────────────┐
 │ │forward_zones│ │     │ Branch Connector    │
-│ │    .conf    │ │     │ VIP: 10.213.182.62  │
+│ │    .conf    │ │     │ VIP: 10.0.0.12      │
 │ └─────────────┘ │     │                     │
 └────────┬────────┘     │ ┌─────────────────┐ │
          │              │ │ Synthetic IP    │ │
@@ -179,10 +179,10 @@ This downloads all registered devices from your Zscaler environment in CSV forma
 python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf BRANCH_CONNECTOR_VIP --domain yourdomain.local
 
 # With multiple Branch Connector IPs (for redundancy)
-python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.213.182.62,10.213.182.63 --domain corp.local
+python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.0.0.12,10.0.0.13 --domain corp.local
 
 # Verbose output for troubleshooting
-python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.213.182.62 --domain corp.local --verbose
+python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.0.0.12 --domain corp.local --verbose
 ```
 
 ### 3. Reload Unbound
@@ -202,7 +202,7 @@ sudo systemctl restart unbound
 python download_devices_csv.py
 
 # Step 2: Generate forward zones (using the auto-generated filename)
-python generate_forward_zones.py zscaler_devices_20250610_143022.csv /etc/unbound/forward_zones.conf 10.213.182.62 --domain corp.local
+python generate_forward_zones.py zscaler_devices_20250610_143022.csv /etc/unbound/forward_zones.conf 10.0.0.12 --domain corp.local
 
 # Step 3: Reload Unbound
 sudo unbound-control reload
@@ -238,91 +238,98 @@ For production environments requiring high availability, this project includes s
 ### Primary Server Script Setup
 
 1. **Copy Python scripts and synchronization script:**
-   ```bash
-   # Copy Python scripts to root directory
-   sudo cp download_devices_csv.py /root/
-   sudo cp generate_forward_zones.py /root/
-   
-   # Copy synchronization script
-   sudo cp sync_unbound_primary.sh /root/
-   sudo chmod +x /root/sync_unbound_primary.sh
-   
-   # Copy .env file with API credentials
-   sudo cp .env /root/
-   sudo chmod 600 /root/.env
-   ```
+
+    ```bash
+    # Copy Python scripts to root directory
+    sudo cp download_devices_csv.py /root/
+    sudo cp generate_forward_zones.py /root/
+
+    # Copy synchronization script
+    sudo cp sync_unbound_primary.sh /root/
+    sudo chmod +x /root/sync_unbound_primary.sh
+
+    # Copy .env file with API credentials
+    sudo cp .env /root/
+    sudo chmod 600 /root/.env
+    ```
 
 2. **Create the zonesync user for secure file transfer:**
-   ```bash
-   # Create user
-   sudo useradd -m -s /bin/bash zonesync
-   
-   # Set password (optional if using only SSH keys)
-   sudo passwd zonesync
-   
-   # Create .ssh directory
-   sudo mkdir -p /home/zonesync/.ssh
-   sudo chmod 700 /home/zonesync/.ssh
-   sudo chown zonesync:zonesync /home/zonesync/.ssh
-   ```
+
+    ```bash
+    # Create user
+    sudo useradd -m -s /bin/bash zonesync
+
+    # Set password (optional if using only SSH keys)
+    sudo passwd zonesync
+
+    # Create .ssh directory
+    sudo mkdir -p /home/zonesync/.ssh
+    sudo chmod 700 /home/zonesync/.ssh
+    sudo chown zonesync:zonesync /home/zonesync/.ssh
+    ```
 
 3. **Configure cron for nightly execution:**
-   ```bash
-   # Add to root's crontab - runs at 2:00 AM daily
-   echo "0 2 * * * /root/sync_unbound_primary.sh >/dev/null 2>&1" | sudo crontab -
-   
-   # Verify crontab entry
-   sudo crontab -l
-   ```
+
+    ```bash
+    # Add to root's crontab - runs at 2:00 AM daily
+    echo "0 2 * * * /root/sync_unbound_primary.sh >/dev/null 2>&1" | sudo crontab -
+
+    # Verify crontab entry
+    sudo crontab -l
+    ```
 
 ### Secondary Server Script Setup
 
 1. **Copy Python script and synchronization script:**
-   ```bash
-   # Only need the generate script (no download script needed)
-   sudo cp generate_forward_zones.py /root/
-   
-   # Copy synchronization script
-   sudo cp sync_unbound_secondary.sh /root/
-   sudo chmod +x /root/sync_unbound_secondary.sh
-   ```
+
+    ```bash
+    # Only need the generate script (no download script needed)
+    sudo cp generate_forward_zones.py /root/
+
+    # Copy synchronization script
+    sudo cp sync_unbound_secondary.sh /root/
+    sudo chmod +x /root/sync_unbound_secondary.sh
+    ```
 
 2. **Configure the primary server IP:**
-   ```bash
-   # Replace with your actual primary server IP
-   sudo sed -i 's/IP_SERVER_PRIMARIO/10.1.1.100/g' /root/sync_unbound_secondary.sh
-   ```
+
+    ```bash
+    # Replace with your actual primary server IP
+    sudo sed -i 's/IP_SERVER_PRIMARIO/10.1.1.100/g' /root/sync_unbound_secondary.sh
+    ```
 
 3. **Setup SSH key authentication:**
-   ```bash
-   # Generate SSH key pair (as root)
-   sudo ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N ""
-   
-   # Copy public key to primary server
-   sudo ssh-copy-id zonesync@10.1.1.100
-   
-   # Test SSH connection
-   sudo ssh zonesync@10.1.1.100 "echo 'SSH connection successful'"
-   ```
+
+    ```bash
+    # Generate SSH key pair (as root)
+    sudo ssh-keygen -t rsa -b 4096 -f /root/.ssh/id_rsa -N ""
+
+    # Copy public key to primary server
+    sudo ssh-copy-id zonesync@10.1.1.100
+
+    # Test SSH connection
+    sudo ssh zonesync@10.1.1.100 "echo 'SSH connection successful'"
+    ```
 
 4. **Configure cron for nightly execution (30 minutes after primary):**
-   ```bash
-   # Add to root's crontab - runs at 2:30 AM daily
-   echo "30 2 * * * /root/sync_unbound_secondary.sh >/dev/null 2>&1" | sudo crontab -
-   
-   # Verify crontab entry
-   sudo crontab -l
-   ```
+
+    ```bash
+    # Add to root's crontab - runs at 2:30 AM daily
+    echo "30 2 * * * /root/sync_unbound_secondary.sh >/dev/null 2>&1" | sudo crontab -
+
+    # Verify crontab entry
+    sudo crontab -l
+    ```
 
 ### Script Features
 
-- **Automatic error handling**: Scripts exit on any failure to prevent partial updates
-- **Comprehensive logging**: All operations logged with timestamps
-  - Primary: `/var/log/unbound_sync.log`
-  - Secondary: `/var/log/unbound_sync_secondary.log`
-- **Permission management**: Automatic permission setting for synchronized files
-- **Service management**: Automatic Unbound restart after configuration changes
-- **API rate limit protection**: Only primary server accesses Zscaler API
+-   **Automatic error handling**: Scripts exit on any failure to prevent partial updates
+-   **Comprehensive logging**: All operations logged with timestamps
+    -   Primary: `/var/log/unbound_sync.log`
+    -   Secondary: `/var/log/unbound_sync_secondary.log`
+-   **Permission management**: Automatic permission setting for synchronized files
+-   **Service management**: Automatic Unbound restart after configuration changes
+-   **API rate limit protection**: Only primary server accesses Zscaler API
 
 ### Monitoring the Synchronization
 
@@ -375,6 +382,7 @@ chmod +x /usr/local/bin/check-unbound-sync.sh
 For automatic failover, configure your clients to use both servers:
 
 #### Option 1: Client DNS Configuration
+
 ```yaml
 # /etc/resolv.conf or DHCP configuration
 nameserver 10.1.1.100  # Primary Unbound
@@ -382,16 +390,17 @@ nameserver 10.1.1.101  # Secondary Unbound
 ```
 
 #### Option 2: Load Balancer VIP
+
 For seamless failover, consider using a load balancer or keepalived to provide a single VIP that automatically fails over between servers.
 
 ### Troubleshooting Synchronization
 
-| Issue | Check | Solution |
-|-------|-------|----------|
-| No CSV on secondary | SSH connectivity | Test with `ssh zonesync@primary "ls /home/zonesync/"` |
-| Permission denied | File permissions | Ensure zonesync owns `/home/zonesync/pdl.csv` |
-| Old data | Cron execution | Check cron logs: `grep CRON /var/log/syslog` |
-| API errors (primary only) | API credentials | Verify `.env` file in `/root/` |
+| Issue                     | Check            | Solution                                              |
+| ------------------------- | ---------------- | ----------------------------------------------------- |
+| No CSV on secondary       | SSH connectivity | Test with `ssh zonesync@primary "ls /home/zonesync/"` |
+| Permission denied         | File permissions | Ensure zonesync owns `/home/zonesync/pdl.csv`         |
+| Old data                  | Cron execution   | Check cron logs: `grep CRON /var/log/syslog`          |
+| API errors (primary only) | API credentials  | Verify `.env` file in `/root/`                        |
 
 ## 🤖 Manual Automation (Without HA Scripts)
 
@@ -403,7 +412,7 @@ cat > /usr/local/bin/update-zscaler-zones.sh << 'EOF'
 #!/bin/bash
 cd /opt/zscaler-forward-zones-generator
 python download_devices_csv.py /tmp/devices.csv
-python generate_forward_zones.py /tmp/devices.csv /etc/unbound/forward_zones.conf 10.213.182.62 --domain corp.local
+python generate_forward_zones.py /tmp/devices.csv /etc/unbound/forward_zones.conf 10.0.0.12 --domain corp.local
 unbound-control reload
 EOF
 
@@ -421,17 +430,17 @@ The `forward_zones.conf` file contains:
 # Unbound Forward Zones Configuration
 # Generated on: 2025-06-10 14:30:22
 # Total forward zones: 1,847
-# DNS server: 10.213.182.62
+# DNS server: 10.0.0.12
 # Domain: corp.local
 # Note: Hostnames have been deduplicated to prevent conflicts
 
 forward-zone:
     name: "laptop-jsmith.corp.local"
-    forward-addr: 10.213.182.62
+    forward-addr: 10.0.0.12
 
 forward-zone:
     name: "desktop-doe001.corp.local"
-    forward-addr: 10.213.182.62
+    forward-addr: 10.0.0.12
 
 # ... additional zones ...
 ```

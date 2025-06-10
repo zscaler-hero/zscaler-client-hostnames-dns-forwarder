@@ -274,7 +274,7 @@ def main():
         print(f"File saved as: {output_filename}")
         print(f"\nYou can now use this file with:")
         print(
-            f"python generate_forward_zones.py {output_filename} zones.conf 10.213.182.62"
+            f"python generate_forward_zones.py {output_filename} zones.conf 10.0.0.12,10.0.0.13 --domain yourdomain.local"
         )
     else:
         print(f"\n✗ CSV download failed")
