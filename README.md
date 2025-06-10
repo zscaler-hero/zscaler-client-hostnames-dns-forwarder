@@ -226,7 +226,7 @@ For production environments requiring high availability, this project includes s
 │  Primary Server     │                    │  Secondary Server   │
 │                     │                    │                     │
 │ • Downloads from API│      SSH/SCP       │ • No API access     │
-│ • Generates zones   │ ◄────────────────►│ • Syncs from primary│
+│ • Generates zones   │ ◄────────────────► │ • Syncs from primary│
 │ • Unbound (active)  │   pdl.csv transfer │ • Unbound (standby) │
 │                     │                    │                     │
 │ API Rate Limits: ✓  │                    │ API Rate Limits: ✗  │
