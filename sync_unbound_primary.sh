@@ -9,8 +9,8 @@ ZONESYNC_DIR="/home/zonesync"
 ZONESYNC_USER="zonesync"
 PYTHON_GENERATE_SCRIPT="/root/generate_forward_zones.py"
 UNBOUND_CONF="/etc/unbound/forward_zones.conf"
-DNS_SERVERS="10.213.182.62,10.213.182.63"
-DOMAIN="cariprpc.it"
+DNS_SERVERS="10.0.0.1,10.0.0.2"
+DOMAIN="domain.com"
 LOG_FILE="/var/log/unbound_sync.log"
 
 # Logging function
