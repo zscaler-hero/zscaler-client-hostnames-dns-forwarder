@@ -24,7 +24,7 @@ This solution addresses a common challenge in Zscaler ZPA deployments: enabling 
 
 ```
 ┌─────────────────┐                  ┌─────────────────────┐
-│   ZPA Client    │                  │  Corporate DNS      │
+│   Server        │                  │  Corporate DNS      │
 │ (hostname.corp) │                  │  (10.1.1.53)        │
 └────────┬────────┘                  └──────────┬──────────┘
          │                                      │
@@ -56,7 +56,7 @@ This solution addresses a common challenge in Zscaler ZPA deployments: enabling 
 
 ### System Requirements
 
--   RHEL 9 / CentOS 9 / Rocky Linux 9 (for App Connector deployment)
+-   RHEL 9 / Or other Linux
 -   Python 3.6 or higher
 -   Unbound DNS server
 -   Network access to Zscaler API endpoints
@@ -102,7 +102,7 @@ ZSCALER_CLIENT_ID=your_client_id
 ZSCALER_CLIENT_SECRET=your_client_secret
 ```
 
-Replace the values with your OAuth credentials obtained from the Zscaler admin portal.
+Replace the values with your OAuth credentials obtained from the Zscaler admin portal (you will need at least read-only access to the Zscaler ZCC API)
 
 ## ⚙️ Unbound Configuration
 
@@ -253,7 +253,7 @@ For production environments requiring high availability, this project includes s
     sudo chmod 600 /root/.env
     ```
 
-2. **Create the zonesync user for secure file transfer:**
+2. **Create the zonesync user for secure file transfer (on primary server):**
 
     ```bash
     # Create user
