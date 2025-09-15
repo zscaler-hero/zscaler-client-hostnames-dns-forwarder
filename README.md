@@ -115,6 +115,9 @@ server:
     # CRITICAL: Use only iterator module (no DNSSEC validation)
     module-config: "iterator"
 
+    # Disable systemd integration (prevents notification errors)
+    use-systemd: no
+
     # Network interfaces
     interface: 0.0.0.0
     interface: ::0
@@ -268,13 +271,15 @@ For production environments requiring high availability, this project includes s
     sudo chown zonesync:zonesync /home/zonesync/.ssh
     ```
 
-3. **Configure cron for nightly execution:**
+3. **Configure cron for automated execution:**
 
     ```bash
-    # Add to root's crontab - runs at 2:00 AM daily
-    echo "0 2 * * * /root/sync_unbound_primary.sh >/dev/null 2>&1" | sudo crontab -
+    # Add to root's crontab - runs at 6:00 AM and 1:00 PM daily
+    (sudo crontab -l 2>/dev/null | grep -v sync_unbound_primary.sh; \
+     echo "0 6 * * * /root/sync_unbound_primary.sh >/dev/null 2>&1"; \
+     echo "0 13 * * * /root/sync_unbound_primary.sh >/dev/null 2>&1") | sudo crontab -
 
-    # Verify crontab entry
+    # Verify crontab entries
     sudo crontab -l
     ```
 
@@ -311,13 +316,15 @@ For production environments requiring high availability, this project includes s
     sudo ssh zonesync@10.1.1.100 "echo 'SSH connection successful'"
     ```
 
-4. **Configure cron for nightly execution (30 minutes after primary):**
+4. **Configure cron for automated execution (30 minutes after primary):**
 
     ```bash
-    # Add to root's crontab - runs at 2:30 AM daily
-    echo "30 2 * * * /root/sync_unbound_secondary.sh >/dev/null 2>&1" | sudo crontab -
+    # Add to root's crontab - runs at 6:30 AM and 1:30 PM daily
+    (sudo crontab -l 2>/dev/null | grep -v sync_unbound_secondary.sh; \
+     echo "30 6 * * * /root/sync_unbound_secondary.sh >/dev/null 2>&1"; \
+     echo "30 13 * * * /root/sync_unbound_secondary.sh >/dev/null 2>&1") | sudo crontab -
 
-    # Verify crontab entry
+    # Verify crontab entries
     sudo crontab -l
     ```
 
@@ -486,6 +493,36 @@ forward-zone:
 | Zones not loading     | Check file permissions on forward_zones.conf                |
 | Authentication errors | Verify .env credentials and API permissions                 |
 | No devices found      | Check CSV contains Windows devices with "Registered" status |
+| systemd notify error  | See "Unbound systemd notification error" section below      |
+
+### Unbound systemd notification error
+
+If you encounter this error when starting Unbound:
+```
+fatal error: sd_notify failed /run/systemd/notify: No such file or directory
+```
+
+This occurs when Unbound tries to use systemd notification but cannot access the socket. Solution:
+
+1. **Create a systemd override using systemctl edit:**
+    ```bash
+    sudo systemctl edit unbound.service
+    ```
+
+2. **Add the following content in the editor that opens:**
+    ```ini
+    [Service]
+    Type=simple
+    ```
+
+3. **Save and exit the editor, then restart:**
+    ```bash
+    sudo systemctl daemon-reload
+    sudo systemctl restart unbound
+    sudo systemctl status unbound
+    ```
+
+This creates an override file at `/etc/systemd/system/unbound.service.d/override.conf` and changes the service type from `notify` to `simple`, avoiding the systemd notification requirement.
 
 ### Performance Optimization
 
