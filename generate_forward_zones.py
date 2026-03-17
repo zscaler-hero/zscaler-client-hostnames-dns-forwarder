@@ -32,9 +32,19 @@ MIT License - see LICENSE file for details
 import csv
 import sys
 import argparse
-from typing import List, Dict, Set
+from typing import List, Dict, Set, Optional
 from datetime import datetime
 import os
+
+
+def get_version() -> str:
+    """Read version from VERSION file."""
+    version_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "VERSION")
+    try:
+        with open(version_file, "r") as f:
+            return f.read().strip()
+    except FileNotFoundError:
+        return "unknown"
 
 
 def read_devices_csv(csv_file: str) -> List[Dict[str, str]]:
@@ -170,6 +180,7 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
     device_type_key = None
     hostname_key = None
     device_state_key = None
+    user_key = None
 
     # Find the correct field names once (more efficient for large datasets)
     device_type_fields = {"devicetype", "type", "osversion", "os", "platform"}
@@ -181,6 +192,7 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
         "name",
     }
     device_state_fields = {"devicestate", "state", "status", "connectionstatus"}
+    user_fields = {"user", "email", "username", "useremail"}
 
     for key in first_device.keys():
         normalized_key = key.lower().replace(" ", "").replace("_", "")
@@ -193,8 +205,8 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
             hostname_key = key
         elif not device_state_key and normalized_key in device_state_fields:
             device_state_key = key
-        if device_type_key and hostname_key and device_state_key:
-            break
+        elif not user_key and normalized_key in user_fields:
+            user_key = key
 
     if not device_type_key or not hostname_key:
         print(f"Warning: Could not find device type or hostname fields")
@@ -214,6 +226,8 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
     )
     if device_state_key:
         print(f"Device state field: '{device_state_key}'")
+    if user_key:
+        print(f"User field: '{user_key}'")
 
     # Filter devices efficiently
     windows_devices = []
@@ -243,6 +257,7 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
             device_copy["_hostname"] = hostname
             device_copy["_device_type"] = device_type
             device_copy["_device_state"] = device_state
+            device_copy["_user"] = device.get(user_key, "") if user_key else ""
             windows_devices.append(device_copy)
 
     print(
@@ -251,26 +266,29 @@ def filter_windows_devices(devices: List[Dict[str, str]]) -> List[Dict[str, str]
     return windows_devices
 
 
-def deduplicate_hostnames(windows_devices: List[Dict[str, str]]) -> List[str]:
+def deduplicate_hostnames_with_domains(
+    windows_devices: List[Dict[str, str]],
+) -> Dict[str, Set[str]]:
     """
-    Extract and deduplicate hostnames from Windows devices.
+    Extract and deduplicate hostnames, preserving email domain associations.
+
+    For each unique hostname, collects the set of email domains from
+    all users associated with that hostname.
 
     Optimized for large datasets (up to 30k+ hostnames):
-    1. Uses sets for O(1) lookup performance
-    2. Minimizes memory usage during processing
-    3. Avoids storing large duplicate lists
-    4. Efficient hostname normalization
+    1. Uses dicts and sets for O(1) operations
+    2. Single pass through devices
+    3. Efficient hostname normalization
 
     Args:
         windows_devices (List[Dict[str, str]]): List of Windows device records
 
     Returns:
-        List[str]: List of unique, normalized hostnames sorted alphabetically
+        Dict[str, Set[str]]: Mapping of normalized hostname to set of email domains
     """
     print("Performing hostname deduplication...")
 
-    # Use sets for efficient O(1) operations
-    normalized_hostnames: Set[str] = set()
+    hostname_domains: Dict[str, Set[str]] = {}
 
     # Track counts without storing full lists (memory efficient)
     original_count = 0
@@ -296,28 +314,50 @@ def deduplicate_hostnames(windows_devices: List[Dict[str, str]]) -> List[str]:
                 and len(normalized) > 0
                 and normalized not in ("unknown", "n/a", "null", "localhost", "")
             ):
-                normalized_hostnames.add(normalized)
+                if normalized not in hostname_domains:
+                    hostname_domains[normalized] = set()
+
+                # Extract email domain from user field
+                user_email = device.get("_user", "").strip()
+                if "@" in user_email:
+                    email_domain = user_email.split("@", 1)[1].lower().strip()
+                    if email_domain:
+                        hostname_domains[normalized].add(email_domain)
             else:
                 invalid_count += 1
 
-    # Convert to sorted list (single operation)
-    unique_hostnames = sorted(normalized_hostnames)
-    duplicates_removed = original_count - len(unique_hostnames) - invalid_count
+    duplicates_removed = original_count - len(hostname_domains) - invalid_count
 
     # Report deduplication results (no long lists)
     print(f"Hostname deduplication results:")
     print(f"  - Original hostnames processed: {original_count}")
-    print(f"  - Unique hostnames after deduplication: {len(unique_hostnames)}")
+    print(f"  - Unique hostnames after deduplication: {len(hostname_domains)}")
     print(f"  - Duplicates removed: {duplicates_removed}")
     print(f"  - Invalid hostnames filtered: {invalid_count}")
 
-    return unique_hostnames
+    return hostname_domains
+
+
+def deduplicate_hostnames(windows_devices: List[Dict[str, str]]) -> List[str]:
+    """
+    Extract and deduplicate hostnames from Windows devices.
+    Legacy wrapper for backward compatibility.
+
+    Args:
+        windows_devices (List[Dict[str, str]]): List of Windows device records
+
+    Returns:
+        List[str]: List of unique, normalized hostnames sorted alphabetically
+    """
+    hostname_domains = deduplicate_hostnames_with_domains(windows_devices)
+    return sorted(hostname_domains.keys())
 
 
 def generate_forward_zones_config(
     windows_devices: List[Dict[str, str]],
     dns_ips: str = "10.0.0.12",
     domain: str = "domain.local",
+    domain_mappings: Optional[Dict[str, str]] = None,
 ) -> str:
     """
     Generate Unbound forward zones configuration for Windows devices.
@@ -327,22 +367,25 @@ def generate_forward_zones_config(
     - Memory-efficient hostname deduplication
     - Minimal intermediate string operations
     - Support for multiple DNS servers (comma-separated)
+    - Optional secondary domain generation via domain mappings
 
     Args:
         windows_devices (List[Dict[str, str]]): List of Windows device records
         dns_ips (str): DNS server IP addresses to forward to (comma-separated)
         domain (str): Domain suffix for forward zones
+        domain_mappings (Optional[Dict[str, str]]): Email domain to secondary DNS domain mappings
 
     Returns:
         str: Unbound configuration content
     """
-    # Step 1: Deduplicate hostnames
-    unique_hostnames = deduplicate_hostnames(windows_devices)
+    # Step 1: Deduplicate hostnames (preserving email domain associations)
+    hostname_domains = deduplicate_hostnames_with_domains(windows_devices)
 
-    if not unique_hostnames:
+    if not hostname_domains:
         print("Warning: No valid hostnames found after deduplication")
         return "# No valid hostnames found\n"
 
+    unique_hostnames = sorted(hostname_domains.keys())
     hostname_count = len(unique_hostnames)
 
     # Parse and validate DNS IPs
@@ -363,18 +406,34 @@ def generate_forward_zones_config(
         print("Error: No valid DNS IPs found after validation")
         return "# No valid DNS IPs found\n"
 
+    # Pre-compute secondary zone count for the header
+    secondary_zone_count = 0
+    if domain_mappings:
+        for hostname in unique_hostnames:
+            email_domains = hostname_domains.get(hostname, set())
+            seen_secondary = set()
+            for ed in email_domains:
+                if ed in domain_mappings:
+                    sd = domain_mappings[ed]
+                    if sd != domain and sd not in seen_secondary:
+                        secondary_zone_count += 1
+                        seen_secondary.add(sd)
+
+    total_zone_count = hostname_count + secondary_zone_count
+
     print(f"Generating configuration for {hostname_count} unique hostnames...")
+    if domain_mappings and secondary_zone_count > 0:
+        print(f"Secondary domain zones to generate: {secondary_zone_count}")
+        print(f"Total forward zones: {total_zone_count}")
     print(f"Using DNS servers: {', '.join(valid_dns_ips)}")
 
     # Pre-allocate list for better performance with large datasets
-    # Each hostname generates (2 + len(dns_ips)) lines, plus header (7 lines)
     lines_per_hostname = (
         2 + len(valid_dns_ips) + 1
     )  # forward-zone, name, N*forward-addr, empty
-    estimated_lines = (hostname_count * lines_per_hostname) + 8
+    estimated_lines = (total_zone_count * lines_per_hostname) + 12
     config_lines = []
-    # Note: Python lists don't have reserve(), but pre-extending helps with large datasets
-    if hostname_count > 1000:
+    if total_zone_count > 1000:
         config_lines.extend([None] * estimated_lines)
         config_lines.clear()  # Clear but keep allocated memory
 
@@ -384,9 +443,19 @@ def generate_forward_zones_config(
         [
             "# Unbound Forward Zones Configuration",
             f"# Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-            f"# Total forward zones: {hostname_count}",
+            f"# Total forward zones: {total_zone_count}",
+            f"# Primary domain zones: {hostname_count}",
             f"# DNS servers: {dns_servers_str}",
-            f"# Domain: {domain}",
+            f"# Primary domain: {domain}",
+        ]
+    )
+    if domain_mappings and secondary_zone_count > 0:
+        config_lines.append(f"# Secondary domain zones: {secondary_zone_count}")
+        config_lines.append(f"# Domain mappings ({len(domain_mappings)} configured):")
+        for email_dom, dns_dom in domain_mappings.items():
+            config_lines.append(f"#   @{email_dom} -> {dns_dom}")
+    config_lines.extend(
+        [
             "# Note: Hostnames have been deduplicated to prevent conflicts",
             "",
         ]
@@ -394,12 +463,27 @@ def generate_forward_zones_config(
 
     # Generate forward zones efficiently
     for hostname in unique_hostnames:
+        # Always generate primary domain zone
         config_lines.append("forward-zone:")
         config_lines.append(f'    name: "{hostname}.{domain}"')
-        # Add all DNS servers
         for dns_ip in valid_dns_ips:
             config_lines.append(f"    forward-addr: {dns_ip}")
         config_lines.append("")
+
+        # Generate secondary domain zones if mappings are configured
+        if domain_mappings:
+            email_domains = hostname_domains.get(hostname, set())
+            added_secondary = set()
+            for email_domain in sorted(email_domains):
+                if email_domain in domain_mappings:
+                    secondary_dns_domain = domain_mappings[email_domain]
+                    if secondary_dns_domain != domain and secondary_dns_domain not in added_secondary:
+                        config_lines.append("forward-zone:")
+                        config_lines.append(f'    name: "{hostname}.{secondary_dns_domain}"')
+                        for dns_ip in valid_dns_ips:
+                            config_lines.append(f"    forward-addr: {dns_ip}")
+                        config_lines.append("")
+                        added_secondary.add(secondary_dns_domain)
 
     print(f"Configuration generation completed ({len(config_lines)} lines)")
 
@@ -459,6 +543,56 @@ def validate_dns_ip(dns_ip: str) -> bool:
     return True
 
 
+def load_domain_mappings(mappings_file: str) -> Dict[str, str]:
+    """
+    Load email-domain to DNS-domain mappings from a configuration file.
+
+    File format: one mapping per line, 'email_domain:dns_domain'
+    Lines starting with '#' are comments. Empty lines are ignored.
+
+    Args:
+        mappings_file (str): Path to the domain mappings configuration file
+
+    Returns:
+        Dict[str, str]: Mapping of email domain (lowercase) to secondary DNS domain
+
+    Raises:
+        FileNotFoundError: If mappings file doesn't exist
+        ValueError: If mappings file contains invalid format
+    """
+    if not os.path.exists(mappings_file):
+        raise FileNotFoundError(f"Domain mappings file not found: {mappings_file}")
+
+    mappings = {}
+    print(f"Loading domain mappings from: {mappings_file}")
+
+    with open(mappings_file, "r", encoding="utf-8") as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            # Skip comments and empty lines
+            if not line or line.startswith("#"):
+                continue
+            if ":" not in line:
+                raise ValueError(
+                    f"Invalid mapping format at line {line_num}: '{line}' "
+                    f"(expected 'email_domain:dns_domain')"
+                )
+            parts = line.split(":", 1)
+            email_domain = parts[0].strip().lower()
+            dns_domain = parts[1].strip()
+            if not email_domain or not dns_domain:
+                raise ValueError(
+                    f"Empty domain at line {line_num}: '{line}'"
+                )
+            mappings[email_domain] = dns_domain
+
+    print(f"Loaded {len(mappings)} domain mapping(s):")
+    for email_dom, dns_dom in mappings.items():
+        print(f"  {email_dom} -> {dns_dom}")
+
+    return mappings
+
+
 def main():
     """Main function to handle command line arguments and orchestrate the process."""
 
@@ -471,6 +605,7 @@ Examples:
   %(prog)s devices.csv zones.conf 10.0.0.12,192.168.1.1
   %(prog)s devices.csv custom_zones.conf 10.0.0.12,192.168.1.1,8.8.8.8 --domain internal.local
   %(prog)s devices.csv my_zones.conf 10.0.0.12 --verbose
+  %(prog)s devices.csv zones.conf 10.0.0.12 --domain corp.local --domain-mappings /root/domain_mappings.conf
         """,
     )
 
@@ -485,6 +620,12 @@ Examples:
         "-d",
         default="domain.local",
         help="Domain suffix for forward zones (default: domain.local)",
+    )
+    parser.add_argument(
+        "--domain-mappings",
+        "-m",
+        default=None,
+        help="Path to domain mappings configuration file for secondary DNS domain generation",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true", help="Show detailed output"
@@ -506,12 +647,15 @@ Examples:
         print("Please provide valid IPv4 addresses (e.g., 10.0.0.12,192.168.1.1)")
         sys.exit(1)
 
-    print("Zscaler Forward Zones Generator")
+    version = get_version()
+    print(f"Zscaler Forward Zones Generator v{version}")
     print("=" * 40)
     print(f"Input CSV: {args.input_csv_file}")
     print(f"Output file: {args.output_conf_file}")
     print(f"DNS IPs: {args.dns_ips}")
     print(f"Domain: {args.domain}")
+    if args.domain_mappings:
+        print(f"Domain mappings: {args.domain_mappings}")
     print()
 
     try:
@@ -556,30 +700,47 @@ Examples:
                 f"Large dataset detected ({len(windows_devices)} devices) - skipping sample output"
             )
 
-        # Step 3: Generate configuration
-        print("\nStep 3: Generating forward zones configuration...")
+        # Step 3: Load domain mappings (optional)
+        domain_mappings = None
+        if args.domain_mappings:
+            print("\nStep 3: Loading domain mappings...")
+            domain_mappings = load_domain_mappings(args.domain_mappings)
+
+        # Step 4: Generate configuration
+        step_num = 4 if args.domain_mappings else 3
+        print(f"\nStep {step_num}: Generating forward zones configuration...")
         config_content = generate_forward_zones_config(
-            windows_devices, args.dns_ips, args.domain
+            windows_devices, args.dns_ips, args.domain, domain_mappings
         )
 
-        # Step 4: Save configuration file
-        print("\nStep 4: Saving configuration file...")
+        # Save configuration file
+        step_num += 1
+        print(f"\nStep {step_num}: Saving configuration file...")
         save_config_file(config_content, args.output_conf_file)
 
         print(f"\n✓ Successfully generated forward zones configuration!")
         print(f"Configuration file: {args.output_conf_file}")
 
-        # Count unique hostnames from the generated config
+        # Count zones from the generated config
         config_lines = config_content.split("\n")
         zone_count = len(
             [line for line in config_lines if line.strip().startswith("name:")]
         )
+        # Count primary vs secondary zones
+        primary_zone_count = len(
+            [line for line in config_lines if line.strip().startswith(f'name:') and f'.{args.domain}"' in line]
+        )
+        secondary_zone_count = zone_count - primary_zone_count
+
         print(f"Total forward zones created: {zone_count}")
+        if secondary_zone_count > 0:
+            print(f"  - Primary domain zones: {primary_zone_count}")
+            print(f"  - Secondary domain zones: {secondary_zone_count}")
         print(f"Windows devices processed: {len(windows_devices)}")
 
-        if zone_count < len(windows_devices):
+        if primary_zone_count < len(windows_devices):
             print(
-                f"Note: {len(windows_devices) - zone_count} duplicate hostnames were removed during deduplication"
+                f"Note: {len(windows_devices) - primary_zone_count} duplicate hostnames were removed during deduplication"
             )
 
         # Show a preview of the generated config (limited for large files)

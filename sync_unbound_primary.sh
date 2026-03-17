@@ -11,6 +11,7 @@ PYTHON_GENERATE_SCRIPT="/root/generate_forward_zones.py"
 UNBOUND_CONF="/etc/unbound/forward_zones.conf"
 DNS_SERVERS="10.0.0.1,10.0.0.2"
 DOMAIN="domain.com"
+DOMAIN_MAPPINGS="/root/domain_mappings.conf"
 LOG_FILE="/var/log/unbound_sync.log"
 
 # Logging function
@@ -54,9 +55,23 @@ else
     exit 1
 fi
 
+# Copy domain mappings to zonesync folder (if it exists)
+if [ -f "$DOMAIN_MAPPINGS" ]; then
+    log_message "Copying domain mappings to $ZONESYNC_DIR"
+    cp "$DOMAIN_MAPPINGS" "$ZONESYNC_DIR/domain_mappings.conf"
+    chown "$ZONESYNC_USER":"$ZONESYNC_USER" "$ZONESYNC_DIR/domain_mappings.conf"
+    chmod 644 "$ZONESYNC_DIR/domain_mappings.conf"
+fi
+
 # Generate forward zones
 log_message "Generating forward zones"
-if python "$PYTHON_GENERATE_SCRIPT" "$CSV_OUTPUT" "$UNBOUND_CONF" "$DNS_SERVERS" --domain "$DOMAIN"; then
+GENERATE_ARGS=("$CSV_OUTPUT" "$UNBOUND_CONF" "$DNS_SERVERS" --domain "$DOMAIN")
+if [ -f "$DOMAIN_MAPPINGS" ]; then
+    GENERATE_ARGS+=(--domain-mappings "$DOMAIN_MAPPINGS")
+    log_message "Using domain mappings from $DOMAIN_MAPPINGS"
+fi
+
+if python "$PYTHON_GENERATE_SCRIPT" "${GENERATE_ARGS[@]}"; then
     log_message "Forward zones generated successfully"
 else
     log_message "ERROR: Forward zones generation failed with code $?"

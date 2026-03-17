@@ -82,3 +82,6 @@ results/
 PS_devices.csv
 devices_to_be_removed_*.csv
 zscaler_devices_*.csv
+
+# Domain mappings (deployment-specific)
+domain_mappings.conf

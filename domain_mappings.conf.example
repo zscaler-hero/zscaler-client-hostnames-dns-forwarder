@@ -1,0 +1,52 @@
+# Domain Mappings Configuration
+# =============================
+#
+# This file maps user email domains to secondary DNS domains for multi-domain
+# forward zone generation. Place this file on both primary and secondary servers
+# (the sync scripts will handle copying it automatically).
+#
+# Location: /root/domain_mappings.conf (on production servers)
+#
+# Format:
+#   email_domain:secondary_dns_domain
+#
+# Rules:
+#   - One mapping per line
+#   - Lines starting with '#' are comments
+#   - Empty lines are ignored
+#   - Whitespace around ':' is trimmed
+#   - Email domain matching is case-insensitive
+#
+# How it works:
+#   - Every hostname ALWAYS gets a forward zone with the primary domain (--domain)
+#   - If ANY user associated with a hostname has an email matching a mapped
+#     email domain, an ADDITIONAL forward zone is generated with the secondary domain
+#   - One hostname can match multiple mappings if it has users from different domains
+#   - If no user matches any mapping, only the primary domain zone is generated
+#
+# Example scenario:
+#   Primary domain: corp.local
+#   Mapping: subsidiary.com:subsidiary.local
+#
+#   Device "LT001" with user "john@subsidiary.com" will get:
+#     forward-zone:
+#         name: "lt001.corp.local"          <- primary (always generated)
+#         forward-addr: 10.0.0.12
+#
+#     forward-zone:
+#         name: "lt001.subsidiary.local"    <- secondary (user matches mapping)
+#         forward-addr: 10.0.0.12
+#
+#   Device "LT002" with user "jane@corp.com" will only get:
+#     forward-zone:
+#         name: "lt002.corp.local"          <- primary only (no mapping match)
+#         forward-addr: 10.0.0.12
+#
+# Usage:
+#   python generate_forward_zones.py devices.csv zones.conf 10.0.0.12 \
+#       --domain corp.local --domain-mappings /root/domain_mappings.conf
+#
+
+# Add your mappings below:
+# subsidiary.com:subsidiary.local
+# partner.it:partner.internal

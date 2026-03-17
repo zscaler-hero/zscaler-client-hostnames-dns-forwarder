@@ -1,5 +1,7 @@
 # Zscaler Forward Zones Generator
 
+![Version](https://img.shields.io/badge/version-2.0.0-blue)
+
 A comprehensive solution for integrating Unbound DNS with Zscaler ZPA to enable client-to-client connectivity through synthetic IP resolution. This project automatically generates DNS forward zone configurations from Zscaler-registered devices, allowing seamless resolution of client FQDNs through Branch Connectors.
 
 ---
@@ -19,6 +21,15 @@ This solution addresses a common challenge in Zscaler ZPA deployments: enabling 
 -   Maintain standard DNS resolution for server resources through corporate DNS
 -   Enable ZPA client-to-client functionality without complex DNS restructuring
 -   Support dynamic environments with automated configuration updates
+
+## 🆕 What's New in v2.0.0
+
+- **Multi-Domain Support**: Generate secondary DNS forward zones based on user email domain mappings
+- **Domain Mappings Configuration**: Simple text-based config file (`domain_mappings.conf`) to map email domains to secondary DNS domains
+- **Backward Compatible**: Without `--domain-mappings`, behavior is identical to v1.x
+- **Versioning**: Explicit version tracking via `VERSION` file and `CHANGELOG.md`
+
+See the [Multi-Domain Support](#-multi-domain-support) section for configuration details and the [Migration Guide](#-migration-from-v1x-to-v200) for upgrade instructions.
 
 ## 🏗️ Architecture
 
@@ -186,6 +197,9 @@ python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.
 
 # Verbose output for troubleshooting
 python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.0.0.12 --domain corp.local --verbose
+
+# With multi-domain support (see Multi-Domain Support section)
+python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.0.0.12 --domain corp.local --domain-mappings /root/domain_mappings.conf
 ```
 
 ### 3. Reload Unbound
@@ -217,6 +231,64 @@ dig @localhost client001.corp.local
 # Server hostname should resolve through corporate DNS
 dig @localhost server001.corp.local
 ```
+
+## 🌐 Multi-Domain Support
+
+In some environments, multiple subsidiaries or entities share the same Zscaler tenant but require different DNS domains for client hostname resolution. The multi-domain feature generates **secondary forward zones** based on the user's email domain.
+
+### How It Works
+
+1. Every hostname **always** gets a forward zone with the primary domain (`--domain`)
+2. If a hostname's associated user has an email matching a configured mapping, an **additional** forward zone is generated with the secondary domain
+3. Multiple mappings are supported simultaneously
+
+### Configuration
+
+Create a `domain_mappings.conf` file (use `domain_mappings.conf.example` as template):
+
+```
+# Format: email_domain:secondary_dns_domain
+subsidiary.com:subsidiary.local
+partner.it:partner.internal
+```
+
+### Usage
+
+```bash
+python generate_forward_zones.py devices.csv /etc/unbound/forward_zones.conf 10.0.0.12 \
+    --domain corp.local --domain-mappings /root/domain_mappings.conf
+```
+
+### Example Output
+
+With the mapping `fondazione.example.com:fondazione.local`, a device `LT001` belonging to user `john@fondazione.example.com` generates:
+
+```yaml
+# Primary zone (always generated for every hostname)
+forward-zone:
+    name: "lt001.corp.local"
+    forward-addr: 10.0.0.12
+
+# Secondary zone (generated because user matches fondazione.example.com mapping)
+forward-zone:
+    name: "lt001.fondazione.local"
+    forward-addr: 10.0.0.12
+```
+
+A device `LT002` belonging to user `jane@corp.com` (no mapping match) only gets:
+
+```yaml
+forward-zone:
+    name: "lt002.corp.local"
+    forward-addr: 10.0.0.12
+```
+
+### Notes
+
+- The `--domain-mappings` argument is optional. Without it, behavior is identical to v1.x
+- Email domain matching is case-insensitive
+- If multiple users share the same hostname and some match a mapping, the secondary zone is generated
+- In HA setups, the sync scripts automatically copy `domain_mappings.conf` to the secondary server
 
 ## 🔄 High Availability Setup with Synchronization Scripts
 
@@ -254,6 +326,10 @@ For production environments requiring high availability, this project includes s
     # Copy .env file with API credentials
     sudo cp .env /root/
     sudo chmod 600 /root/.env
+
+    # (Optional) Copy domain mappings for multi-domain support
+    sudo cp domain_mappings.conf.example /root/domain_mappings.conf
+    # Edit /root/domain_mappings.conf with your email-to-DNS domain mappings
     ```
 
 2. **Create the zonesync user for secure file transfer (on primary server):**
@@ -337,6 +413,7 @@ For production environments requiring high availability, this project includes s
 -   **Permission management**: Automatic permission setting for synchronized files
 -   **Service management**: Automatic Unbound restart after configuration changes
 -   **API rate limit protection**: Only primary server accesses Zscaler API
+-   **Multi-domain sync**: Domain mappings file (`domain_mappings.conf`) is automatically copied to secondary server
 
 ### Monitoring the Synchronization
 
@@ -436,9 +513,13 @@ The `forward_zones.conf` file contains:
 ```yaml
 # Unbound Forward Zones Configuration
 # Generated on: 2025-06-10 14:30:22
-# Total forward zones: 1,847
-# DNS server: 10.0.0.12
-# Domain: corp.local
+# Total forward zones: 1867
+# Primary domain zones: 1847
+# DNS servers: 10.0.0.12
+# Primary domain: corp.local
+# Secondary domain zones: 20
+# Domain mappings (1 configured):
+#   @subsidiary.com -> subsidiary.local
 # Note: Hostnames have been deduplicated to prevent conflicts
 
 forward-zone:
@@ -449,8 +530,62 @@ forward-zone:
     name: "desktop-doe001.corp.local"
     forward-addr: 10.0.0.12
 
+# Secondary zone (user matches subsidiary.com mapping)
+forward-zone:
+    name: "desktop-doe001.subsidiary.local"
+    forward-addr: 10.0.0.12
+
 # ... additional zones ...
 ```
+
+Without `--domain-mappings`, the output contains only primary domain zones (identical to v1.x behavior).
+
+## 🔄 Migration from v1.x to v2.0.0
+
+v2.0.0 is **fully backward compatible**. Existing deployments continue to work without any changes.
+
+### To Enable Multi-Domain Support
+
+1. **Update the scripts** on both primary and secondary servers:
+    ```bash
+    # On primary server
+    sudo cp generate_forward_zones.py /root/
+    sudo cp sync_unbound_primary.sh /root/
+    sudo chmod +x /root/sync_unbound_primary.sh
+
+    # On secondary server
+    sudo cp generate_forward_zones.py /root/
+    sudo cp sync_unbound_secondary.sh /root/
+    sudo chmod +x /root/sync_unbound_secondary.sh
+    ```
+
+2. **Create the domain mappings file** on the primary server:
+    ```bash
+    sudo cp domain_mappings.conf.example /root/domain_mappings.conf
+    sudo nano /root/domain_mappings.conf
+    # Add your mappings, e.g.: subsidiary.com:subsidiary.local
+    ```
+
+3. **Test before applying** (optional but recommended):
+    ```bash
+    # Generate to a test file first
+    python /root/generate_forward_zones.py /root/pdl.csv /tmp/test_zones.conf \
+        10.0.0.12 --domain corp.local --domain-mappings /root/domain_mappings.conf
+
+    # Verify the output
+    grep -c "forward-zone" /tmp/test_zones.conf
+    ```
+
+4. **Run the sync** to apply changes:
+    ```bash
+    sudo /root/sync_unbound_primary.sh
+    # Wait 30 minutes for secondary to sync, or run manually:
+    # sudo /root/sync_unbound_secondary.sh  (on secondary server)
+    ```
+
+### No Multi-Domain Needed?
+
+Simply update the scripts without creating `domain_mappings.conf`. The new scripts detect the absence of the file and behave identically to v1.x.
 
 ## 🔧 Troubleshooting
 
